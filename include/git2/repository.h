@@ -92,6 +92,7 @@ GIT_EXTERN(int) git_repository_open(git_repository **repository, const char *pat
  */
 GIT_EXTERN(int) git_repository_open2(git_repository **repository,
 		const char *git_dir,
+		const char *git_config_file,
 		const char *git_object_directory,
 		const char *git_index_file,
 		const char *git_work_tree);
@@ -128,6 +129,7 @@ GIT_EXTERN(int) git_repository_open2(git_repository **repository,
 
 GIT_EXTERN(int) git_repository_open3(git_repository **repository,
 		const char *git_dir,
+		const char *git_config_file,
 		git_odb *object_database,
 		const char *git_index_file,
 		const char *git_work_tree);
@@ -235,6 +237,7 @@ GIT_EXTERN(int) git_repository_is_empty(git_repository *repo);
  */
 typedef enum {
 	GIT_REPO_PATH,
+	GIT_REPO_PATH_CONFIG,
 	GIT_REPO_PATH_INDEX,
 	GIT_REPO_PATH_ODB,
 	GIT_REPO_PATH_WORKDIR
@@ -273,7 +276,7 @@ GIT_EXTERN(int) git_repository_is_bare(git_repository *repo);
  * @param out the repository's configuration
  * @param repo the repository for which to get the config
  */
-GIT_EXTERN(int) git_repository_config(git_config **out, git_repository *repo);
+GIT_EXTERN(git_config*) git_repository_config(git_repository *repo);
 
 /** @} */
 GIT_END_DECL

@@ -48,6 +48,50 @@ typedef struct {
 	unsigned is_bare:1, has_been_reinit:1;
 } repo_init;
 
+int git_repository__config_init(git_repository *repo, const char *file_path)
+{
+	git_config *cfg = NULL;
+	git_config_file *local = NULL;
+	char gitconfig[GIT_PATH_MAX];
+	int error = GIT_SUCCESS;
+
+	assert(repo && file_path);
+
+	error = git_config_open_global(&cfg);
+	if (error < GIT_SUCCESS)
+		return git__rethrow(error, "Failed to open global config");
+
+	git__joinpath(gitconfig, repo->path_repository, file_path);
+	error = git_config_file__ondisk(&local, gitconfig);
+	if (error < GIT_SUCCESS) {
+		error = git__rethrow(error, "Failed to open local config");
+		goto cleanup;
+	}
+
+	error = git_config_add_file(cfg, local, 2);
+	if (error < GIT_SUCCESS) {
+		error = git__rethrow(error, "Failed to add the local config");
+		goto cleanup;
+	}
+
+	error = local->open(local);
+	if (error < GIT_SUCCESS) {
+		error = git__rethrow(error, "Failed to open config file");
+		goto cleanup;
+	}
+
+	repo->config = cfg;
+
+cleanup:
+	if (error < GIT_SUCCESS) {
+		git_config_free(cfg);
+		if (local)
+			local->free(local);
+	}
+
+	return error;
+}
+
 /*
  * Git repository open methods
  *
@@ -56,12 +100,14 @@ typedef struct {
 static int assign_repository_dirs(
 		git_repository *repo,
 		const char *git_dir,
+		const char *git_config_file,
 		const char *git_object_directory,
 		const char *git_index_file,
 		const char *git_work_tree)
 {
 	char path_aux[GIT_PATH_MAX];
 	int error = GIT_SUCCESS;
+	int is_bare;
 
 	assert(repo);
 
@@ -76,6 +122,37 @@ static int assign_repository_dirs(
 	repo->path_repository = git__strdup(path_aux);
 	if (repo->path_repository == NULL)
 		return GIT_ENOMEM;
+	
+	/* path to GIT_LOCAL_CONFIG */
+	if (git_config_file == NULL)
+		git__joinpath(path_aux, repo->path_repository, GIT_CONFIG_FILENAME_INREPO);
+	else {
+		error = gitfo_prettify_dir_path(path_aux, sizeof(path_aux), git_config_file, NULL);
+		if (error < GIT_SUCCESS)
+			return git__rethrow(error, "Failed to prettify configuration file path");
+	}
+
+	/* Store GIT_LOCAL_CONFIG */
+	repo->path_config = git__strdup(path_aux);
+	if (repo->path_config == NULL)
+		return GIT_ENOMEM;
+
+	error = git_repository__config_init(repo, repo->path_config);
+	if (error < GIT_SUCCESS)
+		return git__rethrow(error, "Failed to open configuration file");
+
+	error = git_config_get_bool(repo->config, GIT_CONFIG_KEY_IS_BARE, &is_bare);
+	switch (error) {
+		case GIT_SUCCESS:
+			repo->is_bare = !!is_bare;
+			break;
+		case GIT_ENOTFOUND:
+			//by default, a repo is not bare
+			repo->is_bare = 0;
+			break;
+		default:
+			return git__rethrow(error, "Failed to retrieve repository type from configuration file");
+	}
 
 	/* path to GIT_OBJECT_DIRECTORY */
 	if (git_object_directory == NULL)
@@ -91,10 +168,13 @@ static int assign_repository_dirs(
 	if (repo->path_odb == NULL)
 		return GIT_ENOMEM;
 
-	/* path to GIT_WORK_TREE */
-	if (git_work_tree == NULL)
-		repo->is_bare = 1;
-	else {
+	if (repo->is_bare) {
+		if (git_index_file != NULL)
+			return git__throw(GIT_EINVALIDARGS, "Bare repositories don't have index");
+		
+		if (git_work_tree != NULL)
+			return git__throw(GIT_EINVALIDARGS, "Bare repositories don't have a work tree");
+	} else {
 		error = gitfo_prettify_dir_path(path_aux, sizeof(path_aux), git_work_tree, NULL);
 		if (error < GIT_SUCCESS)
 			return git__rethrow(error, "Failed to open repository");
@@ -157,7 +237,7 @@ static int guess_repository_dirs(git_repository *repo, const char *repository_pa
 		path_work_tree = buffer;
 	}
 
-	return assign_repository_dirs(repo, repository_path, NULL, NULL, path_work_tree);
+	return assign_repository_dirs(repo, repository_path, NULL, NULL, NULL, NULL);
 }
 
 static git_repository *repository_alloc()
@@ -191,6 +271,7 @@ static int init_odb(git_repository *repo)
 
 int git_repository_open3(git_repository **repo_out,
 		const char *git_dir,
+		const char *git_config_file,
 		git_odb *object_database,
 		const char *git_index_file,
 		const char *git_work_tree)
@@ -207,8 +288,9 @@ int git_repository_open3(git_repository **repo_out,
 	if (repo == NULL)
 		return GIT_ENOMEM;
 
-	error = assign_repository_dirs(repo, 
-			git_dir, 
+	error = assign_repository_dirs(repo,
+			git_dir,
+			git_config_file,
 			NULL,
 			git_index_file,
 			git_work_tree);
@@ -233,6 +315,7 @@ cleanup:
 
 int git_repository_open2(git_repository **repo_out,
 		const char *git_dir,
+		const char *git_config_file,
 		const char *git_object_directory,
 		const char *git_index_file,
 		const char *git_work_tree)
@@ -247,7 +330,8 @@ int git_repository_open2(git_repository **repo_out,
 		return GIT_ENOMEM;
 
 	error = assign_repository_dirs(repo,
-			git_dir, 
+			git_dir,
+			git_config_file,
 			git_object_directory,
 			git_index_file,
 			git_work_tree);
@@ -269,48 +353,6 @@ int git_repository_open2(git_repository **repo_out,
 cleanup:
 	git_repository_free(repo);
 	return git__rethrow(error, "Failed to open repository");
-}
-
-int git_repository_config(git_config **out, git_repository *repo)
-{
-	git_config *cfg = NULL;
-	git_config_file *local = NULL;
-	char gitconfig[GIT_PATH_MAX];
-	int error = GIT_SUCCESS;
-
-	error = git_config_open_global(&cfg);
-	if (error < GIT_SUCCESS)
-		return git__rethrow(error, "Failed to open global config");
-
-	git__joinpath(gitconfig, repo->path_repository, GIT_CONFIG_FILENAME_INREPO);
-	error = git_config_file__ondisk(&local, gitconfig);
-	if (error < GIT_SUCCESS) {
-		error = git__rethrow(error, "Failed to open local config");
-		goto cleanup;
-	}
-
-	error = git_config_add_file(cfg, local, 2);
-	if (error < GIT_SUCCESS) {
-		error = git__rethrow(error, "Failed to add the local config");
-		goto cleanup;
-	}
-
-	error = local->open(local);
-	if (error < GIT_SUCCESS) {
-		error = git__rethrow(error, "Failed to open config file");
-		goto cleanup;
-	}
-
-	*out = cfg;
-
-cleanup:
-	if (error < GIT_SUCCESS) {
-		git_config_free(cfg);
-		if (local)
-			local->free(local);
-	}
-
-	return error;
 }
 
 static int discover_repository_dirs(git_repository *repo, const char *path)
@@ -482,6 +524,11 @@ static void git_repository__free_dirs(git_repository *repo)
 	repo->path_repository = NULL;
 	free(repo->path_odb);
 	repo->path_odb = NULL;
+	
+	if (repo->config) {
+		git_config_free(repo->config);
+		repo->config = NULL;
+	}
 }
 
 void git_repository_free(git_repository *repo)
@@ -777,6 +824,9 @@ const char *git_repository_path(git_repository *repo, git_repository_pathid id)
 	switch (id) {
 	case GIT_REPO_PATH:
 		return repo->path_repository;
+	
+	case GIT_REPO_PATH_CONFIG:
+		return repo->path_config;
 
 	case GIT_REPO_PATH_INDEX:
 		return repo->path_index;
@@ -796,4 +846,10 @@ int git_repository_is_bare(git_repository *repo)
 {
 	assert(repo);
 	return repo->is_bare;
+}
+
+git_config *git_repository_config(git_repository *repo)
+{
+	assert(repo);
+	return repo->config;
 }

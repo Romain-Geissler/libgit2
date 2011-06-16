@@ -24,12 +24,14 @@ struct git_object {
 };
 
 struct git_repository {
+	git_config *config;
 	git_odb *db;
 
 	git_cache objects;
 	git_refcache references;
 
 	char *path_repository;
+	char *path_config;
 	char *path_index;
 	char *path_odb;
 	char *path_workdir;

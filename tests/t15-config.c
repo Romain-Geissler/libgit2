@@ -222,7 +222,7 @@ BEGIN_TEST(config10, "a repo's config overrides the global config")
 	setenv("HOME", CONFIG_BASE, 1);
 
 	must_pass(git_repository_open(&repo, REPOSITORY_FOLDER));
-	must_pass(git_repository_config(&cfg, repo));
+	cfg = git_repository_config(repo);
 	setenv("HOME", home_orig, 1);
 	must_pass(git_config_get_int(cfg, "core.repositoryformatversion", &version));
 	must_be_true(version == 0);
@@ -242,7 +242,8 @@ BEGIN_TEST(config11, "fall back to the global config")
 	setenv("HOME", CONFIG_BASE, 1);
 
 	must_pass(git_repository_open(&repo, REPOSITORY_FOLDER));
-	must_pass(git_repository_config(&cfg, repo));
+	cfg = git_repository_config(repo);
+	must_be_true(cfg != NULL);
 	setenv("HOME", home_orig, 1);
 	must_pass(git_config_get_int(cfg, "core.something", &num));
 	must_be_true(num == 2);
